@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <!-- Viewport meta tag for responsive behavior across devices -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Website Link Example</title>
+    <!-- Link to Tailwind CSS CDN for easy styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom styles for the Inter font and basic body styling */
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f0f4f8; /* Light gray background */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh; /* Ensure it takes full viewport height */
+            margin: 0;
+            padding: 20px; /* Add some padding around the content */
+            box-sizing: border-box; /* Include padding in element's total width and height */
+        }
+    </style>
+</head>
+<body class="antialiased">
+    <!-- Main container for the content, centered and styled with Tailwind -->
+    <div class="bg-white p-8 rounded-xl shadow-lg max-w-md w-full text-center border border-gray-200">
+        <h1 class="text-3xl font-extrabold text-gray-900 mb-6">
+            Connect to Another Page
+        </h1>
+
+        <p class="text-lg text-gray-700 mb-8">
+            Click the button below to visit a popular search engine!
+        </p>
+
+        <!-- The anchor tag (<a>) is used to create the hyperlink -->
+        <!--
+            - href: Specifies the URL the link goes to.
+            - target="_blank": Opens the linked document in a new window or tab.
+            - rel="noopener noreferrer": Security best practice when using target="_blank".
+              It prevents the new page from having control over the original page.
+            - Tailwind classes for styling the link as a button:
+              - bg-blue-600: Blue background
+              - hover:bg-blue-700: Darker blue on hover
+              - text-white: White text color
+              - font-bold: Bold font
+              - py-3 px-6: Padding
+              - rounded-full: Fully rounded corners
+              - transition duration-300 ease-in-out: Smooth transition for hover effects
+              - inline-block: Allows padding and margin to be applied correctly
+              - shadow-md: Adds a medium shadow
+              - hover:shadow-lg: Larger shadow on hover
+        -->
+        <a href="https://www.google.com" target="_blank" rel="noopener noreferrer"
+           class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-full
+                  transition duration-300 ease-in-out inline-block shadow-md hover:shadow-lg
+                  focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-75">
+            Go to Google
+        </a>
+
+        <p class="text-sm text-gray-500 mt-8">
+            This is an example of an external link.
+        </p>
+    </div>
+</body>
+</html>
