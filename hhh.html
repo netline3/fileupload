@@ -1,0 +1,787 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simple File Explorer</title>
+    <!-- Tailwind CSS CDN for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Font Awesome CDN for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css"></link>
+    <!-- Google Fonts - Inter for clean typography -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        /* Apply 'Inter' font globally */
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        /* Custom scrollbar for a cleaner look */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 10px;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 10px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 antialiased">
+    <!-- Root div for the React application -->
+    <div id="root"></div>
+
+    <!-- React and ReactDOM CDN imports -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <!-- Babel for JSX transformation in the browser -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- Firebase JS SDKs (version 11.6.1) -->
+    <!-- This script block imports Firebase modules and exposes them globally. -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, getDocs, doc, updateDoc, deleteDoc, query, where, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Expose Firebase services globally so the Babel-processed React script can access them.
+        window.firebaseServices = {
+            initializeApp,
+            getAuth,
+            signInAnonymously,
+            signInWithCustomToken,
+            onAuthStateChanged,
+            getFirestore,
+            collection,
+            addDoc,
+            getDocs,
+            doc,
+            updateDoc,
+            deleteDoc,
+            query,
+            where,
+            onSnapshot
+        };
+    </script>
+
+    <!-- Main React Application Script (processed by Babel for JSX) -->
+    <script type="text/babel">
+        // Destructure React hooks and ReactDOM functions for easier use
+        const { useState, useEffect, useRef } = React;
+        const { createRoot } = ReactDOM;
+
+        // Access Firebase services from the globally exposed object
+        const {
+            initializeApp, getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged,
+            getFirestore, collection, addDoc, getDocs, doc, updateDoc, deleteDoc, query, where, onSnapshot
+        } = window.firebaseServices;
+
+        /**
+         * Main App component for the File Explorer.
+         * Manages state for Firebase, user authentication, current directory,
+         * file/folder data, loading states, modals, and UI messages.
+         */
+        function App() {
+            // State variables for Firebase instances and user data
+            const [db, setDb] = useState(null);
+            const [auth, setAuth] = useState(null);
+            const [userId, setUserId] = useState(null);
+            // State for navigation and displayed items
+            const [currentFolderId, setCurrentFolderId] = useState(null); // null for root folder
+            const [currentPath, setCurrentPath] = useState([]); // Array of {id, name} for breadcrumbs
+            const [items, setItems] = useState([]); // List of files and folders in the current directory
+            const [loading, setLoading] = useState(true); // Loading indicator state
+            // State for modal visibility and content
+            const [showModal, setShowModal] = useState(false);
+            const [modalContent, setModalContent] = useState({ type: '', data: null });
+            // State for displaying UI messages (success/error)
+            const [message, setMessage] = useState('');
+            const [messageType, setMessageType] = useState(''); // 'success' or 'error'
+
+            // Constants for Firestore collection name and maximum file size for Base64 storage
+            const COLLECTION_NAME = 'fileSystemItems';
+            const MAX_BASE64_FILE_SIZE = 50 * 1024; // 50 KB (practical limit for Base64 in Firestore documents)
+
+            /**
+             * useEffect hook for Firebase initialization and authentication.
+             * Runs once on component mount.
+             */
+            useEffect(() => {
+                let app, firestore, firebaseAuth;
+                // Get app ID and Firebase config from global variables provided by the environment
+                const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+                const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+
+                try {
+                    // Initialize Firebase app, Firestore, and Auth services
+                    app = initializeApp(firebaseConfig);
+                    firestore = getFirestore(app);
+                    firebaseAuth = getAuth(app);
+                    setDb(firestore);
+                    setAuth(firebaseAuth);
+
+                    // Sign in using custom token if available, otherwise anonymously
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token !== null) {
+                        signInWithCustomToken(firebaseAuth, __initial_auth_token)
+                            .then(() => console.log('Signed in with custom token'))
+                            .catch(e => {
+                                console.error('Error signing in with custom token:', e);
+                                // Fallback to anonymous sign-in on custom token error
+                                signInAnonymously(firebaseAuth)
+                                    .then(() => console.log('Signed in anonymously'))
+                                    .catch(err => console.error('Error signing in anonymously:', err));
+                            });
+                    } else {
+                        // Sign in anonymously if no custom token is provided
+                        signInAnonymously(firebaseAuth)
+                            .then(() => console.log('Signed in anonymously'))
+                            .catch(err => console.error('Error signing in anonymously:', err));
+                    }
+
+                    // Listen for authentication state changes to set the user ID
+                    const unsubscribeAuth = onAuthStateChanged(firebaseAuth, (user) => {
+                        if (user) {
+                            setUserId(user.uid); // Set user ID once authenticated
+                            setLoading(false); // Stop loading after auth is ready
+                        } else {
+                            setUserId(null); // Clear user ID if logged out
+                            setLoading(false); // Stop loading even if no user (e.g., anonymous failure)
+                        }
+                    });
+
+                    // Cleanup function to unsubscribe from auth listener on unmount
+                    return () => {
+                        unsubscribeAuth();
+                    };
+
+                } catch (error) {
+                    console.error("Firebase initialization error:", error);
+                    showUIMessage('Error initializing Firebase. Please try again later.', 'error');
+                    setLoading(false);
+                }
+            }, []); // Empty dependency array means this effect runs only once on mount
+
+            /**
+             * useEffect hook to fetch and listen for real-time updates of files and folders.
+             * This runs when 'db', 'userId', or 'currentFolderId' changes.
+             */
+            useEffect(() => {
+                // Only proceed if Firestore and user ID are available
+                if (!db || !userId) return;
+
+                setLoading(true); // Start loading state
+                // Reference to the Firestore collection for user's file system items
+                const itemsCollectionRef = collection(db, `artifacts/${__app_id}/users/${userId}/${COLLECTION_NAME}`);
+                // Create a query to get items whose 'parentId' matches the 'currentFolderId'
+                const q = query(itemsCollectionRef, where('parentId', '==', currentFolderId));
+
+                // Set up a real-time listener (onSnapshot) for the query results
+                const unsubscribeSnapshot = onSnapshot(q, (snapshot) => {
+                    // Map snapshot documents to an array of item objects
+                    const fetchedItems = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    // Sort items: folders first, then files, then alphabetically by name
+                    setItems(fetchedItems.sort((a, b) => {
+                        if (a.type === 'folder' && b.type !== 'folder') return -1;
+                        if (a.type !== 'folder' && b.type === 'folder') return 1;
+                        return a.name.localeCompare(b.name);
+                    }));
+                    setLoading(false); // Stop loading after data is fetched
+                }, (error) => {
+                    console.error("Error fetching items:", error);
+                    showUIMessage('Error fetching files and folders.', 'error');
+                    setLoading(false);
+                });
+
+                // Cleanup function to unsubscribe from the snapshot listener when the component unmounts
+                // or dependencies change (e.g., currentFolderId changes, creating a new listener)
+                return () => unsubscribeSnapshot();
+            }, [db, userId, currentFolderId]); // Dependencies for this effect
+
+            /**
+             * Displays a temporary UI message (success or error).
+             * @param {string} msg - The message to display.
+             * @param {'success'|'error'|'info'} type - The type of message.
+             * @param {number} duration - How long the message should be visible in milliseconds.
+             */
+            const showUIMessage = (msg, type = 'info', duration = 3000) => {
+                setMessage(msg);
+                setMessageType(type);
+                // Clear the message after a specified duration
+                setTimeout(() => {
+                    setMessage('');
+                    setMessageType('');
+                }, duration);
+            };
+
+            // --- File/Folder Operations ---
+
+            /**
+             * Handles the creation of a new folder.
+             * @param {string} folderName - The name of the new folder.
+             */
+            const handleCreateFolder = async (folderName) => {
+                if (!folderName) {
+                    showUIMessage('Folder name cannot be empty.', 'error');
+                    return;
+                }
+                setLoading(true); // Start loading
+                try {
+                    // Add a new document to Firestore for the folder
+                    await addDoc(collection(db, `artifacts/${__app_id}/users/${userId}/${COLLECTION_NAME}`), {
+                        name: folderName,
+                        type: 'folder',
+                        parentId: currentFolderId, // Associate with current folder or null for root
+                        createdAt: new Date(), // Timestamp for creation
+                    });
+                    showUIMessage('Folder created successfully.', 'success');
+                } catch (e) {
+                    console.error("Error creating folder:", e);
+                    showUIMessage('Error creating folder.', 'error');
+                } finally {
+                    setLoading(false); // Stop loading
+                    setShowModal(false); // Close the modal
+                }
+            };
+
+            /**
+             * Handles the upload of a selected file.
+             * Converts the file to Base64 and stores it in Firestore.
+             * @param {File} file - The file object from the input.
+             */
+            const handleUploadFile = async (file) => {
+                if (!file) {
+                    showUIMessage('No file selected.', 'error');
+                    return;
+                }
+
+                // Check file size against the defined limit
+                if (file.size > MAX_BASE64_FILE_SIZE) {
+                    showUIMessage(`File size exceeds the limit (${(MAX_BASE64_FILE_SIZE / 1024).toFixed(0)} KB). Please choose a smaller file.`, 'error', 6000);
+                    return; // Exit if file is too large
+                }
+
+                setLoading(true); // Start loading
+                const reader = new FileReader(); // Create a FileReader to read file content
+
+                reader.onload = async (event) => {
+                    // Get only the Base64 part from the data URL (e.g., "data:image/png;base64,iVBORw...")
+                    const base64Content = event.target.result.split(',')[1];
+                    try {
+                        // Add a new document to Firestore for the file
+                        await addDoc(collection(db, `artifacts/${__app_id}/users/${userId}/${COLLECTION_NAME}`), {
+                            name: file.name,
+                            type: 'file',
+                            mimeType: file.type, // MIME type (e.g., 'image/png')
+                            size: file.size, // File size in bytes
+                            content: base64Content, // Base64 encoded content
+                            parentId: currentFolderId, // Associate with current folder
+                            createdAt: new Date(),
+                        });
+                        showUIMessage('File uploaded successfully.', 'success');
+                    } catch (e) {
+                        console.error("Error uploading file:", e);
+                        showUIMessage('Error uploading file.', 'error');
+                    } finally {
+                        setLoading(false); // Stop loading
+                        setShowModal(false); // Close the modal
+                    }
+                };
+
+                reader.onerror = (error) => {
+                    console.error("FileReader error:", error);
+                    showUIMessage('Error reading file.', 'error');
+                    setLoading(false); // Stop loading
+                    setShowModal(false); // Close the modal
+                };
+
+                reader.readAsDataURL(file); // Read the file as a data URL (Base64)
+            };
+
+            /**
+             * Handles the download of a file by creating a temporary download link.
+             * @param {object} item - The file item object from Firestore.
+             */
+            const handleDownloadFile = (item) => {
+                if (item.type !== 'file' || !item.content) {
+                    showUIMessage('Cannot download this item.', 'error');
+                    return;
+                }
+                try {
+                    const link = document.createElement('a'); // Create a temporary anchor element
+                    link.href = `data:${item.mimeType};base64,${item.content}`; // Set href to data URI
+                    link.download = item.name; // Set download attribute to file name
+                    document.body.appendChild(link); // Append to body
+                    link.click(); // Programmatically click the link to trigger download
+                    document.body.removeChild(link); // Remove the temporary link
+                    showUIMessage('File downloaded.', 'success');
+                } catch (e) {
+                    console.error("Error downloading file:", e);
+                    showUIMessage('Error preparing download link.', 'error');
+                }
+            };
+
+            /**
+             * Handles renaming a file or folder.
+             * @param {string} itemId - The ID of the item to rename.
+             * @param {string} newName - The new name for the item.
+             */
+            const handleRenameItem = async (itemId, newName) => {
+                if (!newName) {
+                    showUIMessage('Name cannot be empty.', 'error');
+                    return;
+                }
+                setLoading(true); // Start loading
+                try {
+                    // Get a reference to the document and update its 'name' field
+                    const itemRef = doc(db, `artifacts/${__app_id}/users/${userId}/${COLLECTION_NAME}`, itemId);
+                    await updateDoc(itemRef, { name: newName });
+                    showUIMessage('Item renamed successfully.', 'success');
+                } catch (e) {
+                    console.error("Error renaming item:", e);
+                    showUIMessage('Error renaming item.', 'error');
+                } finally {
+                    setLoading(false); // Stop loading
+                    setShowModal(false); // Close the modal
+                }
+            };
+
+            /**
+             * Handles deletion of a file or folder.
+             * Displays a confirmation modal before proceeding.
+             * @param {object} item - The item object to delete.
+             */
+            const handleDeleteItem = async (item) => {
+                // Use a custom modal for confirmation instead of window.confirm
+                const confirmDelete = await new Promise(resolve => {
+                    setModalContent({
+                        type: 'confirmDelete',
+                        data: {
+                            itemName: item.name,
+                            isFolder: item.type === 'folder',
+                            onConfirm: () => {
+                                setShowModal(false);
+                                resolve(true); // Resolve with true if user confirms
+                            },
+                            onCancel: () => {
+                                setShowModal(false);
+                                resolve(false); // Resolve with false if user cancels
+                            }
+                        }
+                    });
+                    setShowModal(true); // Show the confirmation modal
+                });
+
+                if (!confirmDelete) {
+                    return; // If user cancelled, stop here
+                }
+
+                setLoading(true); // Start loading
+                try {
+                    if (item.type === 'file') {
+                        // Delete the file document
+                        await deleteDoc(doc(db, `artifacts/${__app_id}/users/${userId}/${COLLECTION_NAME}`, item.id));
+                        showUIMessage('File deleted successfully.', 'success');
+                    } else if (item.type === 'folder') {
+                        // For folders, recursively delete contents first
+                        await deleteFolderAndContents(item.id);
+                        showUIMessage(`Folder "${item.name}" and its contents deleted.`, 'success');
+                    }
+                } catch (e) {
+                    console.error("Error deleting item:", e);
+                    showUIMessage('Error deleting item.', 'error');
+                } finally {
+                    setLoading(false); // Stop loading
+                }
+            };
+
+            /**
+             * Recursively deletes a folder and all its contents (files and subfolders).
+             * @param {string} folderIdToDelete - The ID of the folder to delete.
+             */
+            const deleteFolderAndContents = async (folderIdToDelete) => {
+                const itemsCollectionRef = collection(db, `artifacts/${__app_id}/users/${userId}/${COLLECTION_NAME}`);
+                // Query for all items whose parentId is the folder being deleted
+                const q = query(itemsCollectionRef, where('parentId', '==', folderIdToDelete));
+                const snapshot = await getDocs(q); // Get all direct children
+
+                const batchDeletePromises = [];
+                // Iterate through each child item
+                for (const docSnapshot of snapshot.docs) {
+                    const itemData = { id: docSnapshot.id, ...docSnapshot.data() };
+                    if (itemData.type === 'folder') {
+                        // If it's a subfolder, recursively call this function to delete its contents
+                        await deleteFolderAndContents(itemData.id);
+                    }
+                    // Add the delete operation for the current item (file or empty folder)
+                    batchDeletePromises.push(deleteDoc(doc(db, `artifacts/${__app_id}/users/${userId}/${COLLECTION_NAME}`, itemData.id)));
+                }
+                // Wait for all direct children and their descendants to be deleted
+                await Promise.all(batchDeletePromises);
+
+                // Finally, delete the target folder itself after all its contents are gone
+                await deleteDoc(doc(db, `artifacts/${__app_id}/users/${userId}/${COLLECTION_NAME}`, folderIdToDelete));
+            };
+
+
+            // --- Navigation Functions ---
+
+            /**
+             * Navigates into a selected folder.
+             * Updates currentFolderId and currentPath for breadcrumbs.
+             * @param {object} folder - The folder object to navigate into.
+             */
+            const handleGoIntoFolder = (folder) => {
+                setCurrentFolderId(folder.id);
+                setCurrentPath([...currentPath, { id: folder.id, name: folder.name }]);
+            };
+
+            /**
+             * Navigates back one level in the folder hierarchy.
+             */
+            const handleGoBack = () => {
+                const newPath = [...currentPath];
+                newPath.pop(); // Remove the last folder from the path
+                setCurrentPath(newPath);
+                // Set the currentFolderId to the last folder in the new path, or null if back to root
+                setCurrentFolderId(newPath.length > 0 ? newPath[newPath.length - 1].id : null);
+            };
+
+            /**
+             * Navigates to a specific folder in the breadcrumb trail.
+             * @param {number} index - The index of the folder in the currentPath array.
+             */
+            const handleGoToBreadcrumb = (index) => {
+                const newPath = currentPath.slice(0, index + 1); // Slice the path up to the selected index
+                setCurrentPath(newPath);
+                // Set the currentFolderId based on the selected breadcrumb folder
+                setCurrentFolderId(newPath.length > 0 ? newPath[newPath.length - 1].id : null);
+            };
+
+            // Display loading screen if Firebase is still initializing or user ID is not yet determined
+            if (loading && !userId) {
+                return (
+                    <div className="flex items-center justify-center min-h-screen bg-gray-100">
+                        <i className="fas fa-spinner fa-spin text-4xl text-blue-500 mr-3"></i>
+                        <p className="text-gray-700 text-lg">Loading application...</p>
+                    </div>
+                );
+            }
+
+            // Main application UI
+            return (
+                <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4 font-inter">
+                    <div className="max-w-4xl mx-auto bg-white shadow-xl rounded-2xl p-6 md:p-8">
+                        <h1 className="text-4xl font-extrabold text-gray-800 mb-6 text-center">
+                            <span className="bg-clip-text text-transparent bg-gradient-to-r from-blue-500 to-purple-600">
+                                Simple File Explorer
+                            </span>
+                        </h1>
+
+                        {/* Display User ID if available */}
+                        {userId && (
+                            <div className="text-center text-sm text-gray-500 mb-4">
+                                User ID: <span className="font-mono bg-gray-100 p-1 rounded-md select-all">{userId}</span>
+                            </div>
+                        )}
+
+                        {/* Message Display Area */}
+                        {message && (
+                            <div className={`p-3 rounded-lg mb-4 text-center text-sm ${messageType === 'error' ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
+                                {message}
+                            </div>
+                        )}
+
+                        {/* Control Buttons (Create Folder, Upload File) */}
+                        <div className="flex flex-col sm:flex-row justify-center space-y-3 sm:space-y-0 sm:space-x-4 mb-6">
+                            <button
+                                onClick={() => {
+                                    setModalContent({ type: 'createFolder' });
+                                    setShowModal(true);
+                                }}
+                                className="flex-1 px-6 py-3 bg-gradient-to-r from-green-500 to-teal-600 text-white rounded-xl shadow-lg hover:shadow-xl transform hover:-translate-y-1 transition duration-300 ease-in-out focus:outline-none focus:ring-2 focus:ring-green-400 focus:ring-opacity-75"
+                            >
+                                <i className="fas fa-folder-plus mr-2"></i> Create Folder
+                            </button>
+                            {/* Hidden file input for programmatically triggering file selection */}
+                            <input
+                                type="file"
+                                id="fileInput"
+                                className="hidden"
+                                onChange={(e) => {
+                                    if (e.target.files[0]) {
+                                        handleUploadFile(e.target.files[0]);
+                                        e.target.value = ''; // Clear input for next upload
+                                    }
+                                }}
+                            />
+                            <button
+                                onClick={() => document.getElementById('fileInput').click()}
+                                className="flex-1 px-6 py-3 bg-gradient-to-r from-indigo-500 to-purple-600 text-white rounded-xl shadow-lg hover:shadow-xl transform hover:-translate-y-1 transition duration-300 ease-in-out focus:outline-none focus:ring-2 focus:ring-indigo-400 focus:ring-opacity-75"
+                            >
+                                <i className="fas fa-upload mr-2"></i> Upload File
+                            </button>
+                        </div>
+
+                        {/* Breadcrumbs Navigation */}
+                        <nav className="text-sm font-medium text-gray-600 mb-4 flex items-center flex-wrap">
+                            <button
+                                onClick={() => { setCurrentFolderId(null); setCurrentPath([]); }}
+                                className="text-blue-600 hover:text-blue-800 hover:underline px-1 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-300"
+                                title="Go to Root"
+                            >
+                                <i className="fas fa-home mr-1"></i>Root
+                            </button>
+                            {/* Render each folder in the current path as a clickable breadcrumb */}
+                            {currentPath.map((folder, index) => (
+                                <React.Fragment key={folder.id}>
+                                    <span className="mx-1">/</span>
+                                    <button
+                                        onClick={() => handleGoToBreadcrumb(index)}
+                                        className="text-blue-600 hover:text-blue-800 hover:underline px-1 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-300"
+                                        title={`Go to ${folder.name}`}
+                                    >
+                                        {folder.name}
+                                    </button>
+                                </React.Fragment>
+                            ))}
+                            {/* "Back" button, only visible if not in the root folder */}
+                            {currentPath.length > 0 && (
+                                <button
+                                    onClick={handleGoBack}
+                                    className="ml-auto px-3 py-1 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-gray-400"
+                                    title="Go back to parent folder"
+                                >
+                                    <i className="fas fa-arrow-left mr-1"></i> Back
+                                </button>
+                            )}
+                        </nav>
+
+                        {/* File/Folder List Display Area */}
+                        <div className="bg-gray-50 p-4 rounded-xl shadow-inner min-h-[300px]">
+                            {loading ? (
+                                <div className="flex items-center justify-center py-10">
+                                    <i className="fas fa-spinner fa-spin text-4xl text-blue-500"></i>
+                                    <p className="ml-3 text-lg text-gray-600">Loading items...</p>
+                                </div>
+                            ) : items.length === 0 ? (
+                                <p className="text-center text-gray-500 py-10">This folder is empty.</p>
+                            ) : (
+                                <ul className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                                    {/* Map through items to render each file/folder */}
+                                    {items.map(item => (
+                                        <li
+                                            key={item.id}
+                                            className="bg-white rounded-lg shadow-md hover:shadow-lg transition-shadow duration-200 p-4 flex items-center space-x-3 cursor-pointer group"
+                                        >
+                                            {/* Display appropriate icon based on item type and MIME type */}
+                                            {item.type === 'folder' ? (
+                                                <i className="fas fa-folder text-yellow-500 text-2xl"></i>
+                                            ) : (
+                                                <i className={`fas fa-file ${item.mimeType?.startsWith('image') ? 'text-blue-400' : item.mimeType?.startsWith('text') ? 'text-green-400' : 'text-gray-400'} text-2xl`}></i>
+                                            )}
+                                            {/* Item name and size, clickable for navigation/download */}
+                                            <div
+                                                className="flex-1 truncate"
+                                                onClick={() => item.type === 'folder' ? handleGoIntoFolder(item) : handleDownloadFile(item)}
+                                            >
+                                                <p className="font-semibold text-gray-800 truncate">{item.name}</p>
+                                                {item.type === 'file' && (
+                                                    <p className="text-xs text-gray-500">{`${(item.size / 1024).toFixed(2)} KB`}</p>
+                                                )}
+                                            </div>
+                                            {/* Action buttons (Rename, Delete) - visible on hover */}
+                                            <div className="flex space-x-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+                                                <button
+                                                    onClick={() => {
+                                                        setModalContent({ type: 'rename', data: item });
+                                                        setShowModal(true);
+                                                    }}
+                                                    className="p-2 text-blue-500 hover:text-blue-700 rounded-full hover:bg-blue-50 transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-blue-300"
+                                                    title="Rename"
+                                                >
+                                                    <i className="fas fa-edit"></i>
+                                                </button>
+                                                <button
+                                                    onClick={() => handleDeleteItem(item)}
+                                                    className="p-2 text-red-500 hover:text-red-700 rounded-full hover:bg-red-50 transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-red-300"
+                                                    title="Delete"
+                                                >
+                                                    <i className="fas fa-trash-alt"></i>
+                                                </button>
+                                            </div>
+                                        </li>
+                                    ))}
+                                </ul>
+                            )}
+                        </div>
+
+                        {/* Modal Components */}
+                        {showModal && (
+                            <Modal onClose={() => setShowModal(false)}>
+                                {/* Render appropriate modal content based on 'modalContent.type' */}
+                                {modalContent.type === 'createFolder' && (
+                                    <FolderNameInput
+                                        onSubmit={handleCreateFolder}
+                                        onClose={() => setShowModal(false)}
+                                        title="Create New Folder"
+                                        buttonText="Create"
+                                    />
+                                )}
+                                {modalContent.type === 'rename' && (
+                                    <FolderNameInput
+                                        onSubmit={(newName) => handleRenameItem(modalContent.data.id, newName)}
+                                        onClose={() => setShowModal(false)}
+                                        initialValue={modalContent.data.name}
+                                        title={`Rename ${modalContent.data.type === 'folder' ? 'Folder' : 'File'}`}
+                                        buttonText="Rename"
+                                    />
+                                )}
+                                {modalContent.type === 'confirmDelete' && (
+                                    <ConfirmDeleteModal
+                                        itemName={modalContent.data.itemName}
+                                        isFolder={modalContent.data.isFolder}
+                                        onConfirm={modalContent.data.onConfirm}
+                                        onCancel={modalContent.data.onCancel}
+                                    />
+                                )}
+                            </Modal>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        /**
+         * Reusable Modal Component.
+         * Displays its children content in a centered overlay.
+         * @param {object} props
+         * @param {React.ReactNode} props.children - Content to display inside the modal.
+         * @param {function} props.onClose - Function to call when the modal is requested to close.
+         */
+        const Modal = ({ children, onClose }) => {
+            return (
+                <div className="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center z-50 p-4">
+                    <div className="bg-white rounded-xl shadow-2xl p-6 w-full max-w-sm relative">
+                        <button
+                            onClick={onClose}
+                            className="absolute top-3 right-3 text-gray-500 hover:text-gray-800 text-xl focus:outline-none"
+                            title="Close"
+                        >
+                            &times;
+                        </button>
+                        {children}
+                    </div>
+                </div>
+            );
+        };
+
+        /**
+         * Reusable Input Component for folder creation and renaming.
+         * @param {object} props
+         * @param {function(string): void} props.onSubmit - Function to call with the entered name.
+         * @param {function(): void} props.onClose - Function to call to close the input.
+         * @param {string} [props.initialValue=''] - Initial value for the input field.
+         * @param {string} props.title - Title for the input modal.
+         * @param {string} props.buttonText - Text for the submit button.
+         */
+        const FolderNameInput = ({ onSubmit, onClose, initialValue = '', title, buttonText }) => {
+            const [name, setName] = useState(initialValue);
+            const inputRef = useRef(null); // Ref to focus the input field
+
+            // Focus the input field when the component mounts
+            useEffect(() => {
+                if (inputRef.current) {
+                    inputRef.current.focus();
+                }
+            }, []);
+
+            // Handles submission of the name
+            const handleSubmit = () => {
+                onSubmit(name);
+            };
+
+            return (
+                <div className="p-2">
+                    <h3 className="text-xl font-bold text-gray-800 mb-4 text-center">{title}</h3>
+                    <input
+                        type="text"
+                        ref={inputRef}
+                        value={name}
+                        onChange={(e) => setName(e.target.value)}
+                        placeholder="Enter name"
+                        className="w-full p-3 border border-gray-300 rounded-lg mb-4 focus:ring-2 focus:ring-blue-400 focus:border-transparent transition-all duration-200"
+                        onKeyPress={(e) => {
+                            if (e.key === 'Enter') {
+                                handleSubmit(); // Submit on Enter key press
+                            }
+                        }}
+                    />
+                    <div className="flex justify-end space-x-3">
+                        <button
+                            onClick={onClose}
+                            className="px-5 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-gray-400"
+                        >
+                            Cancel
+                        </button>
+                        <button
+                            onClick={handleSubmit}
+                            className="px-5 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                        >
+                            {buttonText}
+                        </button>
+                    </div>
+                </div>
+            );
+        };
+
+        /**
+         * Confirmation Modal for deletion operations.
+         * @param {object} props
+         * @param {string} props.itemName - The name of the item being deleted.
+         * @param {boolean} props.isFolder - True if the item is a folder, false otherwise.
+         * @param {function(): void} props.onConfirm - Function to call if user confirms deletion.
+         * @param {function(): void} props.onCancel - Function to call if user cancels deletion.
+         */
+        const ConfirmDeleteModal = ({ itemName, isFolder, onConfirm, onCancel }) => {
+            return (
+                <div className="p-2">
+                    <h3 className="text-xl font-bold text-red-700 mb-4 text-center">Confirm Deletion</h3>
+                    <p className="text-gray-700 mb-6 text-center">
+                        Are you sure you want to delete <span className="font-semibold">"{itemName}"</span>?
+                        {/* Display additional warning for folders */}
+                        {isFolder && <span className="block mt-2 font-medium text-sm text-red-600">This will also delete all its contents.</span>}
+                    </p>
+                    <div className="flex justify-end space-x-3">
+                        <button
+                            onClick={onCancel}
+                            className="px-5 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-gray-400"
+                        >
+                            Cancel
+                        </button>
+                        <button
+                            onClick={onConfirm}
+                            className="px-5 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-red-400"
+                        >
+                            Delete
+                        </button>
+                    </div>
+                </div>
+            );
+        };
+
+
+        // Get the root DOM element where the React app will be mounted
+        const container = document.getElementById('root');
+        // Create a React root (for React 18 and later)
+        const root = createRoot(container);
+        // Render the main App component into the root
+        root.render(React.createElement(App, null)); // Using React.createElement for broader compatibility
+
+    </script>
+</body>
+</html>
